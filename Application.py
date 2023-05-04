@@ -40,46 +40,51 @@ def recv_ack(socket):
             return None, None
     except socket.timeout:
         return None, None            
+
 def stop_and_wait(args):
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)# Makes a socket for the connection
-    syn_packet = create_packet(0, 0, 8, 0, b'') # Creating a packet syn flag. 
-    send_packet(client_socket, syn_packet, (args.ip, args.port))# Sending an empty packet using with syn falg.
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    syn_packet = create_packet(0, 0, 8, 0, b'')
+    send_packet(client_socket, syn_packet, (args.ip, args.port))
     print("Sent packet with SYN flag to server.")
 
     client_socket.settimeout(5)
+    ignore_ack_once = args.test
     while True:
-        msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)# THhe parameters we recive from the the server.
-        if ack_flag and ack ==1:# When we recive an ack from the client for the SYN packet, then we also send an ack to  complet 
-            print("Received ACK packet from server.")# The three way handshake. 
-            send_ack(client_socket,0, server_addr)# Sends an ack for the 
-            print("Three way handshak is complet!")
+        msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
+        if ack_flag and ack == 1:
+            print("Received ACK packet from server.")
+            send_ack(client_socket, 0, server_addr)
+            print("Three way handshake is complete!")
             break
     seq_number = 1
-    skip_ack=True
-    with open(args.file, "rb") as f:# We start to reading the file in byte mode. 
+    with open(args.file, "rb") as f:
         while True:
-            data = f.read(1460)# The chunk size for every file
+            data = f.read(1460)
             if not data:
                 break
-            data_packet = create_packet(seq_number, 0, 0, 0, data)# Making ready the packets to send to the server. 
-            send_packet(client_socket, data_packet, (args.ip, args.port))# Sending the packets to the server. 
-            print(f"Sent packet with file data (seq {seq_number}) to server.")# COFIRMATION!
+            data_packet = create_packet(seq_number, 0, 0, 0, data)
+            send_packet(client_socket, data_packet, (args.ip, args.port))
+            print(f"Sent packet with file data (seq {seq_number}) to server.")
 
             while True:
                 try:
-                    msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)# We are checking the ack for every packet we sent
-                    if ack_flag and ack == seq_number+1:# If the ack number is equal to the last sequence number then, we go out of the loop and sends new packets. 
-                        print(f"Received ACK packet for seq {seq_number} from server.")# CONFIRMATION. 
+                    msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
+                    if ack_flag and ack == seq_number + 1:
+                        if ignore_ack_once and seq_number == args.test:
+                            ignore_ack_once = False
+                            print(f"Ignored ACK packet for seq {seq_number} from server.")
+                            continue
+                        print(f"Received ACK packet for seq {seq_number} from server.")
                         break
-                except socket.timeout:# If we dont recive an ack in 5 seconds Then we are going the send the last packet again to the server. 
+                except socket.timeout:
                     print(f"Timeout waiting for ACK for seq {seq_number}. Retransmitting...")
                     send_packet(client_socket, data_packet, (args.ip, args.port))
             seq_number += 1
 
-    fin_packet = create_packet(seq_number, 0, 2, 0, b'')# The last packet with the fin flag. 
+    fin_packet = create_packet(seq_number, 0, 2, 0, b'')
     send_packet(client_socket, fin_packet, (args.ip, args.port))
-    print("Sent packet with FIN flag to server.")# CONFIRMATION
-    client_socket.close()# Close the connection 
+    print("Sent packet with FIN flag to server.")
+    client_socket.close()
 
 def gbn_client(args):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -275,7 +280,7 @@ if __name__ == '__main__':
     parser.add_argument("-f", "--file",          type=str,            required=True,        help="File to transfer.")
     parser.add_argument('-p', '--port',          default=3030,        type=int,             help='Server port number.')
     parser.add_argument("-r", "--reliability",   type=str,            choices=["stop_and_wait", "gbn", "sr"], default= 'stop_and_wait', help="Reliability function to use.")
-    parser.add_argument("-t", "--timeout-loss",  action="store_true", help="Ignore ACKs and send data until finished.")
+    parser.add_argument("-t", "--test",          type=int,            default=5,         help="Ignore ACKs and send data until finished.")
     parser.add_argument('-w', '--window_size',   default=5, type=int, help="THe window size")
     args = parser.parse_args()
     if args.client:
