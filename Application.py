@@ -70,10 +70,6 @@ def stop_and_wait(args):
                 try:
                     msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
                     if ack_flag and ack == seq_number + 1:
-                        if ignore_ack_once and seq_number == args.test:
-                            ignore_ack_once = False
-                            print(f"Ignored ACK packet for seq {seq_number} from server.")
-                            continue
                         print(f"Received ACK packet for seq {seq_number} from server.")
                         break
                 except socket.timeout:
@@ -85,35 +81,33 @@ def stop_and_wait(args):
     send_packet(client_socket, fin_packet, (args.ip, args.port))
     print("Sent packet with FIN flag to server.")
     client_socket.close()
-
 def gbn_client(args):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     client_socket.settimeout(5)  # Set socket timeout to 5 seconds
     syn_packet = create_packet(0, 0, 8, 0, b'')
     send_packet(client_socket, syn_packet, (args.ip, args.port))
     print("Sent packet with SYN flag to server.")
-
+   
     with open(args.file, "rb") as f:
         while True:
             try:
-                msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(
-                    client_socket)
+                msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
 
                 if ack_flag and ack == 1:
                     print("Received ACK packet from server.")
-                    #send_ack(client_socket, seq+1,server_addr)
-                    print("Sent ACK for SYN-ACK")
                     print("Three-way handshake connection is established.")
                     break
             except socket.timeout:
                 print("Timeout waiting for SYN-ACK packet. Resending SYN packet.")
                 send_packet(client_socket, syn_packet, (args.ip, args.port))
-        
+
         base = 1
         next_seq = 1
         window_size = 3
         pkt_buffer = queue.Queue()
         eof = False
+        ignore_ack_seq = args.test
+        ignored_ack_once = False
 
         while not eof or not pkt_buffer.empty():
             while next_seq < base + window_size and not eof:
@@ -132,10 +126,10 @@ def gbn_client(args):
 
             try:
                 msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
-                if ack_flag:
-                    while not pkt_buffer.empty() and pkt_buffer.queue[0][0] < ack:
+                if ack_flag and seq==base:
                         _, removed_packet = pkt_buffer.get()
                         base += 1
+                    
             except socket.timeout:
                 print(f"Timeout waiting for ACKs. Resending unacknowledged packets starting from {base}.")
                 for i in range(pkt_buffer.qsize()):
@@ -146,7 +140,6 @@ def gbn_client(args):
         fin_packet = create_packet(next_seq, 0, 2, 0, b'')
         send_packet(client_socket, fin_packet, (args.ip, args.port))
         print("Sent packet with FIN flag to server.")
-
 
 def sr_client(args):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -212,8 +205,10 @@ def server(args):
     prev_seq = None  # Keep track of the previous sequence number
     
     #New
-    base = 1
+    base = 0
     received_packets = {}
+    skip_ack=False
+    skipnr=args.test
     #New
     
     while True:# 
@@ -230,12 +225,18 @@ def server(args):
             continue
         if args.reliability =='gbn':
                 if seq == base:
-                    print("Received file data packet.")
-                    recvd_file.write(msg[12:])
-                    base += 1
-                    ack_packet = create_packet(seq, base, 4, 0, b'')
-                    send_packet(server_socket, ack_packet, client_addr)
-                    print(f"Sent ACK packet for seq {seq} to client.")
+                    if seq==skipnr and not skip_ack :
+                        print(f"Skiping the ack for {seq}")
+                        skip_ack=True
+                        continue
+                    else:
+                        print("Received file data packet.")
+                        recvd_file.write(msg[12:])
+                        base += 1
+                        ack_packet = create_packet(seq, base, 4, 0, b'')
+                        send_packet(server_socket, ack_packet, client_addr)
+                        print(f"Sent ACK packet for seq {seq} to client.")
+                
                 else:
                     print(f"Received out-of-order packet with seq {seq}. Discarding and not sending ACK.")
             
@@ -253,6 +254,10 @@ def server(args):
         elif args.reliability=='stop_and_wait':
             if prev_seq == seq:  # Check if it's a duplicate packet
                   print("Received duplicate packet.")# INFO
+            elif seq==skipnr and not skip_ack:
+                print(f"Skipping the ack for packet with seq {seq}")
+                skip_ack=True
+                continue
             else: 
                 print("Received file data packet.")
                 recvd_file.write(msg[12:])# From every packet we get, we know that the first 12 are the header. Thats why we write after those 12. 
@@ -280,7 +285,7 @@ if __name__ == '__main__':
     parser.add_argument("-f", "--file",          type=str,            required=True,        help="File to transfer.")
     parser.add_argument('-p', '--port',          default=3030,        type=int,             help='Server port number.')
     parser.add_argument("-r", "--reliability",   type=str,            choices=["stop_and_wait", "gbn", "sr"], default= 'stop_and_wait', help="Reliability function to use.")
-    parser.add_argument("-t", "--test",          type=int,            default=5,         help="Ignore ACKs and send data until finished.")
+    parser.add_argument("-t", "--test",          type=int,            default=-1,         help="Ignore ACKs and send data until finished.")
     parser.add_argument('-w', '--window_size',   default=5, type=int, help="THe window size")
     args = parser.parse_args()
     if args.client:
