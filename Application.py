@@ -106,9 +106,6 @@ def gbn_client(args):
         window_size = 3
         pkt_buffer = queue.Queue()
         eof = False
-        ignore_ack_seq = args.test
-        ignored_ack_once = False
-
         while not eof or not pkt_buffer.empty():
             while next_seq < base + window_size and not eof:
                 data = f.read(1460)
