@@ -140,55 +140,66 @@ def gbn_client(args):
 
 def sr_client(args):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    client_socket.settimeout(5)  # Set socket timeout to 5 seconds
     syn_packet = create_packet(0, 0, 8, 0, b'')
     send_packet(client_socket, syn_packet, (args.ip, args.port))
     print("Sent packet with SYN flag to server.")
 
     with open(args.file, "rb") as f:
         while True:
-            msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(
-                client_socket)
+            try:
+                msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
 
-            if ack_flag and ack == 2:
-                print("Received ACK packet from server.")
-                send_ack(client_socket, 0, server_addr)
-                print("Sent ACK for SYN-ACK")
-                print("Three way-hanshake connection is established.")
-                break
+                if ack_flag and ack == 1:
+                    print("Received ACK packet from server.")
+                    print("Three-way handshake connection is established.")
+                    break
+            except socket.timeout:
+                print("Timeout waiting for SYN-ACK packet. Resending SYN packet.")
+                send_packet(client_socket, syn_packet, (args.ip, args.port))
+
         base = 1
         next_seq = 1
+        window_size = 3
         pkt_buffer = queue.Queue()
+        acked_packets = set()
+        eof = False
+        while not eof or not pkt_buffer.empty():
+            while next_seq < base + window_size and not eof:
+                data = f.read(1460)
+                if not data:
+                    eof = True
+                else:
+                    data_packet = create_packet(next_seq, 0, 0, 0, data)
+                    send_packet(client_socket, data_packet, (args.ip, args.port))
+                    print(f"Sent packet with file data (seq {next_seq}) to server.")
+                    pkt_buffer.put((next_seq, data_packet))
+                    next_seq += 1
 
-        while True:
-            while next_seq < base + args.window_size and (data := f.read(1460)):
-                data_packet = create_packet(next_seq, 0, 0, 0, data)
-                send_packet(client_socket, data_packet, (args.ip, args.port))
-                print(f"Sent packet with file data (seq {next_seq}) to server.")
-                pkt_buffer.put((next_seq, data_packet))
-                next_seq += 1
-
-            while base < next_seq:
-                try:
-                    ack, _ = recv_ack(client_socket)
-                    if ack is not None and base <= ack < next_seq:
-                        print(f"Received ACK packet for seq {ack} from server.")
-                        while base <= ack:
-                            pkt_buffer.get()
-                            base += 1
-                    else:
-                        continue
-                except socket.timeout:
-                    print(f"Timeout waiting for ACK packet for seq {base}. Resending packets.")
-                    for i in range(base, next_seq):
-                        _, data_packet = pkt_buffer.queue[i - base]
-                        send_packet(client_socket, data_packet, (args.ip, args.port))
-
-            if not data:
+            if pkt_buffer.empty():
                 break
+
+            try:
+                msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
+                if ack_flag:
+                    acked_packets.add(seq)
+                    if seq == base:
+                        while base in acked_packets:
+                            _, removed_packet = pkt_buffer.get()
+                            base += 1
+            except socket.timeout:
+                print("Timeout waiting for ACKs. Resending unacknowledged packets.")
+                for i in range(pkt_buffer.qsize()):
+                    seq, data_packet = pkt_buffer.queue[i]
+                    if seq not in acked_packets:
+                        send_packet(client_socket, data_packet, (args.ip, args.port))
+                        print(f"Resent packet with file data (seq {seq}) to server.")
 
         fin_packet = create_packet(next_seq, 0, 2, 0, b'')
         send_packet(client_socket, fin_packet, (args.ip, args.port))
         print("Sent packet with FIN flag to server.")
+
+
 def server(args):
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)# Making the socket. 
     server_socket.bind((args.ip, args.port))# Binding the socket
@@ -207,7 +218,7 @@ def server(args):
     skip_ack=False
     skipnr=args.test
     #New
-    
+    out_of_order_buffer = {}
     while True:# 
         msg, client_addr, seq, ack, syn, ack_flag, fin = recv_packet(server_socket)# The parameters we recieve from the client. 
         if syn:# If a packet SYN flag recv
@@ -238,16 +249,24 @@ def server(args):
                     print(f"Received out-of-order packet with seq {seq}. Discarding and not sending ACK.")
             
         elif args.reliability == 'sr':
-            if expected_seq <= seq < expected_seq + args.window_size:
-                buffer_index = seq % (args.window_size * 2)
-                buffer[buffer_index] = msg[12:]
-                send_ack(server_socket, seq, client_addr)
+            print(f"Received file data packet with packet {seq}.")
+            if seq == base:
+                if seq==skipnr and not skip_ack:
+                    print(f"skipping ack for packet{seq} ")
+                    skip_ack=True  
+                    continue
+                else:
+                    recvd_file.write(msg[12:])
+                    base += 1
+                    while base in out_of_order_buffer:
+                        recvd_file.write(out_of_order_buffer.pop(base))
+                        base += 1
+            else:
+                out_of_order_buffer[seq] = msg[12:]
 
-                while buffer[expected_seq % (args.window_size * 2)] is not None:
-                    recvd_file.write(
-                        buffer[expected_seq % (args.window_size * 2)])
-                    buffer[expected_seq % (args.window_size * 2)] = None
-                    expected_seq += 1
+            ack_packet = create_packet(seq, base, 4, 0, b'')
+            send_packet(server_socket, ack_packet, client_addr)
+            print(f"Sent ACK packet for seq {seq} to client.")
         elif args.reliability=='stop_and_wait':
             if prev_seq == seq:  # Check if it's a duplicate packet
                   print("Received duplicate packet.")# INFO
@@ -282,7 +301,7 @@ if __name__ == '__main__':
     parser.add_argument("-f", "--file",          type=str,            required=True,        help="File to transfer.")
     parser.add_argument('-p', '--port',          default=3030,        type=int,             help='Server port number.')
     parser.add_argument("-r", "--reliability",   type=str,            choices=["stop_and_wait", "gbn", "sr"], default= 'stop_and_wait', help="Reliability function to use.")
-    parser.add_argument("-t", "--test",          type=int,            default=-1,         help="Ignore ACKs and send data until finished.")
+    parser.add_argument("-t", "--test",          type=int,            default=-1,           help="Ignore for the ack with specified seq number")
     parser.add_argument('-w', '--window_size',   default=5, type=int, help="THe window size")
     args = parser.parse_args()
     if args.client:
