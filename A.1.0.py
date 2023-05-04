@@ -54,8 +54,8 @@ def stop_and_wait(args):
             send_ack(client_socket,0, server_addr)# Sends an ack for the 
             print("Three way handshak is complet!")
             break
-
     seq_number = 1
+    skip_ack=True
     with open(args.file, "rb") as f:# We start to reading the file in byte mode. 
         while True:
             data = f.read(1460)# The chunk size for every file
