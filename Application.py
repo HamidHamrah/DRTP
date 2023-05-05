@@ -115,7 +115,7 @@ def gbn_client(args):
                     eof = True
                 else:
                     data_packet = create_packet(next_seq, 0, 0, 0, data)# We creat the packet the needs to be send 
-                   # send_packet(client_socket, data_packet, (args.ip, args.port))
+                    send_packet(client_socket, data_packet, (args.ip, args.port))
                     print(f"Sent packet with file data (seq {next_seq}) to server.")# INFO
                     pkt_buffer.put((next_seq, data_packet))# Updating the buffer 
                     next_seq += 1# UPDATE
