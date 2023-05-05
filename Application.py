@@ -83,13 +83,14 @@ def stop_and_wait(args):
     client_socket.close()#Closing the socket. 
 # The implimentation for the GO-back-N method!
 def gbn_client(args):
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)# Making a UDP socket
     client_socket.settimeout(5)  # Set socket timeout to 5 seconds
-    syn_packet = create_packet(0, 0, 8, 0, b'')
-    send_packet(client_socket, syn_packet, (args.ip, args.port))
-    print("Sent packet with SYN flag to server.")
+    syn_packet = create_packet(0, 0, 8, 0, b'')# Packet with SYN flag. 
+    send_packet(client_socket, syn_packet, (args.ip, args.port))# Sending the packet with to the server. 
+    print("Sent packet with SYN flag to server.")# INFO
    
-    with open(args.file, "rb") as f:
+    with open(args.file, "rb") as f:# Opens the file in byte mode and start reading. 
+        # Start of the three way handshak
         while True:
             try:
                 msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
@@ -101,43 +102,43 @@ def gbn_client(args):
             except socket.timeout:
                 print("Timeout waiting for SYN-ACK packet. Resending SYN packet.")
                 send_packet(client_socket, syn_packet, (args.ip, args.port))
-
-        base = 1
-        next_seq = 1
-        window_size = 3
-        pkt_buffer = queue.Queue()
-        eof = False
-        while not eof or not pkt_buffer.empty():
+        #End of the three way handshak
+        base = 1#This is the base sequence number in the GBN protocol. It represents the sequence number of the oldest unacknowledged packet.
+        next_seq = 1# This is the sequence number that will be used for the next packet to be sent.
+        window_size = args.window_size# This is the size of the window in the GBN protocol. It's the maximum number of outstanding (unacknowledged) packets allowed.
+        pkt_buffer = queue.Queue()# This is a queue that stores the packets that have been sent but not yet acknowledged. If a packet is lost and needs to be resent, it can be retrieved from this buffer.
+        eof = False#  This flag indicates End of File (EOF). It's set to True when all data from the file has been read and sent.
+        while not eof or not pkt_buffer.empty():# As long as the queue is not empty and it  is not the end of the file we continue
             while next_seq < base + window_size and not eof:
-                data = f.read(1460)
-                if not data:
+                data = f.read(1460)# Readint the file the chunk of 1460 byte
+                if not data:# If no data left, we set the falg for END OF FILE to True to jump out of the loop. 
                     eof = True
                 else:
-                    data_packet = create_packet(next_seq, 0, 0, 0, data)
-                    send_packet(client_socket, data_packet, (args.ip, args.port))
-                    print(f"Sent packet with file data (seq {next_seq}) to server.")
-                    pkt_buffer.put((next_seq, data_packet))
-                    next_seq += 1
+                    data_packet = create_packet(next_seq, 0, 0, 0, data)# We creat the packet the needs to be send 
+                   # send_packet(client_socket, data_packet, (args.ip, args.port))
+                    print(f"Sent packet with file data (seq {next_seq}) to server.")# INFO
+                    pkt_buffer.put((next_seq, data_packet))# Updating the buffer 
+                    next_seq += 1# UPDATE
 
-            if pkt_buffer.empty():
+            if pkt_buffer.empty():# If there is nothing left in the queue
                 break
-
+            # Now for every packet we send, we expect an ACK. when we recive the ack flag, we compare it to what was in the window if it was correct then we move on and remove the packet form the queue. 
             try:
                 msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
-                if ack_flag and seq==base:
-                        _, removed_packet = pkt_buffer.get()
-                        base += 1
+                if ack_flag and seq==base:# Check 
+                        _, removed_packet = pkt_buffer.get()# Removing form queu if it was write 
+                        base += 1# Updating the base to add another packet in the queue
                     
-            except socket.timeout:
-                print(f"Timeout waiting for ACKs. Resending unacknowledged packets starting from {base}.")
-                for i in range(pkt_buffer.qsize()):
+            except socket.timeout:# If timeout occurs. 
+                print(f"Timeout waiting for ACKs. Resending unacknowledged packets starting from {base}.")# INFO
+                for i in range(pkt_buffer.qsize()):# if we didint recive the ack we start resend the packts. 
                     seq, data_packet = pkt_buffer.queue[i]
                     send_packet(client_socket, data_packet, (args.ip, args.port))
-                    print(f"Resent packet with file data (seq {seq}) to server.")
+                    print(f"Resent packet with file data (seq {seq}) to server.")# INFO
 
-        fin_packet = create_packet(next_seq, 0, 2, 0, b'')
-        send_packet(client_socket, fin_packet, (args.ip, args.port))
-        print("Sent packet with FIN flag to server.")
+        fin_packet = create_packet(next_seq, 0, 2, 0, b'')# Packet with FIN falg. 
+        send_packet(client_socket, fin_packet, (args.ip, args.port))# Sending the packt with fin flag. 
+        print("Sent packet with FIN flag to server.")#INFO
 # The implimentation for th Selective-Repeat
 def sr_client(args):
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
