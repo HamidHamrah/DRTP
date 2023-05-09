@@ -108,6 +108,7 @@ def stop_and_wait(args):
                     if ack_flag and ack == seq_number + 1:#If condition is fullfild
                         break
                 except socket.timeout:# If we didnt get an ACK after 500ms the we resend the packet again. 
+                    print(f"No ACK recived for packet {seq_number}- Retransmitting")
                     send_packet(client_socket, data_packet, (args.ip, args.port))#sending the packet with the missing AACK
             seq_number += 1# Updating the sequence number. 
     # When there is no file left we send a packet with find flag indicating that the file transfer is over. 
@@ -173,6 +174,7 @@ def gbn_client(args):
                 for i in range(pkt_buffer.qsize()):# if we didint recive the ack we start resend the packts. 
                     seq, data_packet = pkt_buffer.queue[i]
                     send_packet(client_socket, data_packet, (args.ip, args.port))
+                    print(f"Resent packet with file data (seq {seq}) to server.")
                     total_send+=data
         fin_packet = create_packet(next_seq, 0, 2, 0, b'')# Packet with FIN falg. 
         send_packet(client_socket, fin_packet, (args.ip, args.port))# Sending the packt with fin flag. 
