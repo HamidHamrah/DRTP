@@ -6,7 +6,24 @@ import threading
 import queue
 import random
 import time
+import ipaddress 
 header_format = '!IIHH'
+# We validate the port
+def valid_port(port):
+    try:
+        port = int(port)
+        if not 1024 < port < 65536:
+            raise ValueError
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{port} is not in the defined range. it should be highet then 1024 and lower then 65536TH")
+    return port
+# Validate the Ip adress given by the user. 
+def valid_ip(ip_adress):
+    try: 
+        val=ipaddress.ip_address(ip_adress)
+    except ValueError:
+        raise argparse.ArgumentError(f"{ip_adress} is not valid")
+    return ip_adress
 # The function give the possibilty for the user to choose the format for the throughput. 
 def convert(total_bytes, format):# 
     output = ""
@@ -148,37 +165,49 @@ def gbn_client(args):
         pkt_buffer = queue.Queue()# This is a queue that stores the packets that have been sent but not yet acknowledged. If a packet is lost and needs to be resent, it can be retrieved from this buffer.
         eof = False#  This flag indicates End of File (EOF). It's set to True when all data from the file has been read and sent.
         total_send=b""
-        while not eof or not pkt_buffer.empty():# As long as the queue is not empty and it  is not the end of the file we continue
+        
+        while not eof or not pkt_buffer.empty():#As long as the queue is not empty and it  is not the end of the file we continue
             while next_seq < base + window_size and not eof:
-                data = f.read(1460)# Readint the file the chunk of 1460 byte
+                data = f.read(1460)# Reading the file the chunk of 1460 byte
                 if not data:# If no data left, we set the falg for END OF FILE to True to jump out of the loop. 
                     eof = True
                 else:
                     data_packet = create_packet(next_seq, 0, 0, 0, data)# We creat the packet the needs to be send 
                     send_packet(client_socket, data_packet, (args.ip, args.port))
                     total_send+=data
-                    pkt_buffer.put((next_seq, data_packet))# Updating the buffer 
+                    pkt_buffer.put((next_seq, data_packet))
                     next_seq += 1# UPDATE
 
             if pkt_buffer.empty():# If there is nothing left in the queue
                 break
-            # Now for every packet we send, we expect an ACK. when we recive the ack flag, we compare it to what was in the window if it was correct then we move on and remove the packet form the queue. 
+
             try:
                 msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
-                if ack_flag and seq==base:# Check 
-                        _, removed_packet = pkt_buffer.get()# Removing form queu if it was write 
-                        base += 1# Updating the base to add another packet in the queue
-                    
-            except socket.timeout:# If timeout occurs. 
-                print(f"Timeout waiting for ACKs. Resending unacknowledged packets starting from {base}.")# INFO
-                for i in range(pkt_buffer.qsize()):# if we didint recive the ack we start resend the packts. 
+                if ack_flag and seq >= base:# Check 
+                    while base <= seq:
+                        _, removed_packet = pkt_buffer.get()# Removing from queu if it was write 
+                        base += 1
+
+            except socket.timeout:
+                print(f"Timeout waiting for ACKs. Resending unacknowledged packets starting from {base}.")
+                for i in range(pkt_buffer.qsize()):#  if we didint recive the ack we start resend the packts. 
                     seq, data_packet = pkt_buffer.queue[i]
                     send_packet(client_socket, data_packet, (args.ip, args.port))
-                    print(f"Resent packet with file data (seq {seq}) to server.")
+                    print(f"Resent packet with file data (seq {seq}) to server.")#INFO
                     total_send+=data
-        fin_packet = create_packet(next_seq, 0, 2, 0, b'')# Packet with FIN falg. 
-        send_packet(client_socket, fin_packet, (args.ip, args.port))# Sending the packt with fin flag. 
-        elapsed_time=time.time()-start_time
+
+    while True:
+        try:
+            fin_packet = create_packet(0, 0, 2, 0, b'')# Making the fin packet
+            send_packet(client_socket, fin_packet, (args.ip, args.port))
+            msg, server_addr, seq, ack, syn, ack_flag, fin = recv_packet(client_socket)
+            if ack_flag:
+                break
+        except socket.timeout:# If we didnt recive the ACK for the fin packet we resend the packet again. 
+            print("Timeout waiting for FIN-ACK. Resending FIN packet.")
+            continue
+
+    elapsed_time=time.time()-start_time
     data_bytes = len(total_send)
     print(f"ID               Interval        Transfer     Bandwidth")    
     print(f"{args.ip}:{args.port}   0.0 - {elapsed_time:.1f}          {convert(data_bytes,args.Type)}       {calculate_bandwidth(data_bytes, elapsed_time):.2f} Mbps")
@@ -275,6 +304,7 @@ def server(args):
             send_ack(server_socket, 0, client_addr)
         elif fin:# If the server recvieve a packet with fin flag!
             print("Received packet with FIN flag.")#INFO
+            send_ack(server_socket,0,client_addr)
             recvd_file.close()#Closing the file we opend
             print("File transfer complete. File saved as", args.file)#INFO
             break
@@ -340,15 +370,13 @@ def client(args):
         sr_client(args)
     else:
         print("Not working on client side.")
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--client",        action="store_true", help="Run as client.")
     parser.add_argument("-s", "--server",        action="store_true", help="Run as server.")
-    parser.add_argument('-i', '--ip',            type=str,            default="10.0.0.1",   help='Server IP address.')
+    parser.add_argument('-i', '--ip',            type=valid_ip,       default="10.0.0.1",   help='Server IP address.')
     parser.add_argument("-f", "--file",          type=str,            required=True,        help="File to transfer.")
-    parser.add_argument('-p', '--port',          default=3030,        type=int,             help='Server port number.')
+    parser.add_argument('-p', '--port',          default=3030,        type=valid_port,             help='Server port number.')
     parser.add_argument("-r", "--reliability",   type=str,            choices=["stop_and_wait", "gbn", "sr"], default= 'stop_and_wait', help="Reliability function to use.")
     parser.add_argument("-t", "--test",          type=int,            default=-1,           help="Ignore for the ack with specified seq number")
     parser.add_argument('-T', '--Type',          type=str,            default='MB',                  choices=['BYTES','KB', 'MB', 'GB'] ,   help='choose the format of data')
@@ -361,3 +389,5 @@ if __name__ == '__main__':
         client(args)
     elif args.server:
         server(args)
+    else:
+        print("You must chose the mode for the appication to run.")
